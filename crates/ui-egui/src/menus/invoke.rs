@@ -206,7 +206,8 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
         }
         "file.open" => {
             if let Some(path) = params.get("path").and_then(Value::as_str) {
-                open_path(app, path)
+                let dds = crate::dds_import_ui::params(&params)?;
+                open_path_opts(app, path, dds)
             } else {
                 app.open_dialog_file()
             }
@@ -444,8 +445,13 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn open_path(app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
-    app.open_path(path).map(|w| json!({"warnings": w}))
+    open_path_opts(app, path, None)
+}
+
+fn open_path_opts(app: &mut PhotocraftApp, path: &str, dds: Option<photocraft_io::DdsImport>) -> Result<Value, String> {
+    app.open_path_opts(path, dds).map(|w| json!({"warnings": w}))
 }
 
 fn invoke_export_command(app: &mut PhotocraftApp, id: &str, params: &Value) -> Result<Option<Result<Value, String>>, String> {
