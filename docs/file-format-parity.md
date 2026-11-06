@@ -92,7 +92,7 @@ D5100 colour profile. Counts and the G14 estimate are unchanged.
 | Paint.NET `.pdn` | yes | no | [pdn.md](pdn.md) |
 | OpenRaster `.ora` | yes | yes | [ora.md](ora.md) |
 | ICO, QOI | yes | yes | |
-| DirectDraw Surface `.dds` | yes | yes | Opens a 2D texture — File › Open asks (DDS Import) whether the alpha opens as the layer's transparency or as an "Alpha 1" document channel (textures that carry specular data in alpha), whether the mip chain opens as a layer per level (the Intel Texture Works choice) and whether the rows open bottom-up (the GIMP plug-in's load-flipped); scripts pass `ddsAlphaChannel`/`ddsMipmaps`/`ddsFlip` on `file.open`/`file.openAs`/`app.open` (`--dds-alpha-channel`/`--dds-mips-as-layers`/`--dds-load-flip` on the CLI): uncompressed RGB, RGBA or luminance, BC1–BC3 (DXT1/3/5), legacy or DX10 header. Saves a 2D texture uncompressed (BGRA, BGRX, luminance with or without alpha) or BC1–BC3 with the legacy header, optionally with its full mip chain (box filter); Save As and Save a Copy ask (DDS Options), scripts pass `ddsCompression` and `ddsMipmaps` (`--dds-compression`, `--dds-mipmaps` on the CLI). Cubemaps, arrays, volumes and BC4–BC7 are refused (#1327, #8632). Photoshop needs a plug-in |
+| DirectDraw Surface `.dds` | yes | yes | ModTools fork: 2D BC1–BC7, signed BC4/5, BC6H HDR, sRGB and RGBA32F. Advanced write via optional Windows DirectXTex backend. Alpha channel/mip import and generated mip export. Cubes, arrays, volumes and premultiplied alpha rejected. See [details](../DDS-MODTOOLS.md). |
 | Krita `.kra`, GIMP `.xcf`, Procreate | no | no | Not in Photoshop either |
 
 ### Affinity import notes (moved from `roadmap.md`)

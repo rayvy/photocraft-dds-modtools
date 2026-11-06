@@ -215,50 +215,168 @@ impl DpxBits {
     }
 }
 
-/// How a DDS texture stores its pixels.
+/// DDS storage. Signed BC4/5 retain numeric data; BC6H retains HDR floats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DdsCompression {
-    /// Uncompressed, 8 bits per channel: BGRA (BGRX without alpha), or luminance with or
-    /// without alpha for grayscale. Lossless.
     #[default]
     None,
-    /// BC1 (DXT1): 4 bits per pixel. Alpha is on or off: texels under half opacity become
-    /// transparent black.
     Bc1,
-    /// BC2 (DXT3): 8 bits per pixel, with 4 bits of explicit alpha per texel.
     Bc2,
-    /// BC3 (DXT5): 8 bits per pixel, with smooth interpolated alpha.
     Bc3,
+    Bc4,
+    Bc4Snorm,
+    Bc5,
+    Bc5Snorm,
+    Bc6h,
+    Bc6hSigned,
+    Bc7,
+    Bc1Srgb,
+    Bc2Srgb,
+    Bc3Srgb,
+    Bc7Srgb,
+    RgbaLinear,
+    RgbaSrgb,
+    RgbaFloat,
+    Bc1Linear,
+    Bc2Linear,
+    Bc3Linear,
 }
 
 impl DdsCompression {
-    pub const ALL: [DdsCompression; 4] = [DdsCompression::None, DdsCompression::Bc1, DdsCompression::Bc2, DdsCompression::Bc3];
-
-    /// The name scripts and the CLI use: `none`, `bc1`, `bc2` or `bc3`.
+    pub const ALL: [Self; 21] = [
+        Self::None,
+        Self::Bc1,
+        Self::Bc2,
+        Self::Bc3,
+        Self::Bc4,
+        Self::Bc4Snorm,
+        Self::Bc5,
+        Self::Bc5Snorm,
+        Self::Bc6h,
+        Self::Bc6hSigned,
+        Self::Bc7,
+        Self::Bc1Srgb,
+        Self::Bc2Srgb,
+        Self::Bc3Srgb,
+        Self::Bc7Srgb,
+        Self::RgbaLinear,
+        Self::RgbaSrgb,
+        Self::RgbaFloat,
+        Self::Bc1Linear,
+        Self::Bc2Linear,
+        Self::Bc3Linear,
+    ];
     pub fn name(self) -> &'static str {
         match self {
-            DdsCompression::None => "none",
-            DdsCompression::Bc1 => "bc1",
-            DdsCompression::Bc2 => "bc2",
-            DdsCompression::Bc3 => "bc3",
+            Self::None => "none",
+            Self::Bc1 => "bc1",
+            Self::Bc2 => "bc2",
+            Self::Bc3 => "bc3",
+            Self::Bc4 => "bc4",
+            Self::Bc4Snorm => "bc4-snorm",
+            Self::Bc5 => "bc5",
+            Self::Bc5Snorm => "bc5-snorm",
+            Self::Bc6h => "bc6h",
+            Self::Bc6hSigned => "bc6h-signed",
+            Self::Bc7 => "bc7",
+            Self::Bc1Srgb => "bc1-srgb",
+            Self::Bc2Srgb => "bc2-srgb",
+            Self::Bc3Srgb => "bc3-srgb",
+            Self::Bc7Srgb => "bc7-srgb",
+            Self::RgbaLinear => "rgba-linear",
+            Self::RgbaSrgb => "rgba-srgb",
+            Self::RgbaFloat => "rgba-float",
+            Self::Bc1Linear => "bc1-linear",
+            Self::Bc2Linear => "bc2-linear",
+            Self::Bc3Linear => "bc3-linear",
         }
     }
-
-    /// [`Self::name`] back to a compression, also taking the DXT names (`dxt1`, `dxt3`,
-    /// `dxt5`), in any case. Anything else is `None`.
     pub fn from_name(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "none" => Some(DdsCompression::None),
-            "bc1" | "dxt1" => Some(DdsCompression::Bc1),
-            "bc2" | "dxt3" => Some(DdsCompression::Bc2),
-            "bc3" | "dxt5" => Some(DdsCompression::Bc3),
-            _ => None,
+        let name = name.to_ascii_lowercase();
+        match name.as_str() {
+            "dxt1" => Some(Self::Bc1),
+            "dxt3" => Some(Self::Bc2),
+            "dxt5" => Some(Self::Bc3),
+            _ => Self::ALL.into_iter().find(|c| c.name() == name),
         }
     }
-
-    /// A block compression (lossy), not uncompressed pixels.
+    /// Equivalent DXGI format, or zero for legacy uncompressed storage.
+    pub fn dxgi(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Bc1 => 71,
+            Self::Bc2 => 74,
+            Self::Bc3 => 77,
+            Self::Bc4 => 80,
+            Self::Bc4Snorm => 81,
+            Self::Bc5 => 83,
+            Self::Bc5Snorm => 84,
+            Self::Bc6h => 95,
+            Self::Bc6hSigned => 96,
+            Self::Bc7 => 98,
+            Self::Bc1Srgb => 72,
+            Self::Bc2Srgb => 75,
+            Self::Bc3Srgb => 78,
+            Self::Bc7Srgb => 99,
+            Self::RgbaLinear => 28,
+            Self::RgbaSrgb => 29,
+            Self::RgbaFloat => 2,
+            Self::Bc1Linear => 71,
+            Self::Bc2Linear => 74,
+            Self::Bc3Linear => 77,
+        }
+    }
+    pub fn from_dxgi(dxgi: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| !matches!(c, Self::Bc1 | Self::Bc2 | Self::Bc3) && c.dxgi() == dxgi)
+    }
+    /// Stable document identity: legacy FourCC choices remain distinct from explicit DXGI.
+    pub fn storage_id(self) -> u32 {
+        match self {
+            Self::Bc1 => u32::from_le_bytes(*b"DXT1"),
+            Self::Bc2 => u32::from_le_bytes(*b"DXT3"),
+            Self::Bc3 => u32::from_le_bytes(*b"DXT5"),
+            _ => self.dxgi(),
+        }
+    }
+    pub fn from_storage_id(id: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.storage_id() == id)
+    }
     pub fn is_block(self) -> bool {
-        self != DdsCompression::None
+        !matches!(self, Self::None | Self::RgbaLinear | Self::RgbaSrgb | Self::RgbaFloat)
+    }
+    pub fn is_data(self) -> bool {
+        matches!(self, Self::Bc4 | Self::Bc4Snorm | Self::Bc5 | Self::Bc5Snorm)
+    }
+    pub fn is_float(self) -> bool {
+        matches!(self, Self::Bc4Snorm | Self::Bc5Snorm | Self::Bc6h | Self::Bc6hSigned | Self::RgbaFloat)
+    }
+    pub fn is_srgb(self) -> bool {
+        matches!(self, Self::None | Self::Bc1 | Self::Bc2 | Self::Bc3 | Self::Bc1Srgb | Self::Bc2Srgb | Self::Bc3Srgb | Self::Bc7Srgb | Self::RgbaSrgb)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Uncompressed (legacy)",
+            Self::Bc1 => "BC1 / DXT1",
+            Self::Bc2 => "BC2 / DXT3",
+            Self::Bc3 => "BC3 / DXT5",
+            Self::Bc4 => "BC4 — R data",
+            Self::Bc4Snorm => "BC4 SNORM — signed R",
+            Self::Bc5 => "BC5 — RG data",
+            Self::Bc5Snorm => "BC5 SNORM — signed RG",
+            Self::Bc6h => "BC6H — HDR RGB",
+            Self::Bc6hSigned => "BC6H — signed HDR RGB",
+            Self::Bc7 => "BC7 — RGBA linear",
+            Self::Bc1Srgb => "BC1 — sRGB",
+            Self::Bc2Srgb => "BC2 — sRGB",
+            Self::Bc3Srgb => "BC3 — sRGB",
+            Self::Bc7Srgb => "BC7 — RGBA sRGB",
+            Self::RgbaLinear => "RGBA8 — linear",
+            Self::RgbaSrgb => "RGBA8 — sRGB",
+            Self::RgbaFloat => "RGBA32F — lossless HDR",
+            Self::Bc1Linear => "BC1 — linear (DX10)",
+            Self::Bc2Linear => "BC2 — linear (DX10)",
+            Self::Bc3Linear => "BC3 — linear (DX10)",
+        }
     }
 }
 
@@ -288,6 +406,8 @@ pub struct DdsImport {
 /// What [`crate::dds_info`] reports about a DDS texture, from its header alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DdsInfo {
+    /// Explicit linear transfer in the DX10 header (legacy files remain untagged).
+    pub linear: bool,
     /// The top mip level's size.
     pub width: u32,
     pub height: u32,

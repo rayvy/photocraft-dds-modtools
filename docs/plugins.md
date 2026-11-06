@@ -184,3 +184,6 @@ original for the selection blend, and the instance's memory), i.e. ~12 MiB per t
 - Panel / UI plug-ins, plug-ins that read other layers or documents, host callbacks (progress,
   cancel), plug-in-provided file formats.
 - Filter › Last Filter does not repeat plug-in runs yet.
+# DDS ModTools fork
+
+This fork adds a native DDS file codec; it is not a vanilla-compatible WASM filter plugin. See [DDS-MODTOOLS.md](../DDS-MODTOOLS.md) for formats, backend installation and limits. The filter ABI below is unchanged.

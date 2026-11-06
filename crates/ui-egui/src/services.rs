@@ -14,7 +14,24 @@ pub(crate) const SAVE_OPTIONS_OPEN: &str = "Answer the TIFF, Targa, DDS or JPEG 
 pub struct FormatChoices {
     pub tga_bits: Option<photocraft_io::TgaBits>,
     pub dds: Option<photocraft_io::DdsOptions>,
+    /// A command naming only one DDS field leaves the source's other field intact.
+    /// `None` means a complete choice, as supplied by the DDS dialog.
+    pub dds_partial: Option<DdsField>,
     pub jpeg: Option<jpeg_options_ui::JpegChoice>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DdsField {
+    Compression,
+    Mipmaps,
+}
+
+fn partial_dds_field(params: &Value) -> Option<DdsField> {
+    match (params.get("ddsCompression").is_some_and(|v| !v.is_null()), params.get("ddsMipmaps").is_some_and(|v| !v.is_null())) {
+        (true, false) => Some(DdsField::Compression),
+        (false, true) => Some(DdsField::Mipmaps),
+        _ => None,
+    }
 }
 
 impl FormatChoices {
@@ -23,6 +40,7 @@ impl FormatChoices {
         Ok(FormatChoices {
             tga_bits: targa_options_ui::bits_param(params, cmd)?,
             dds: dds_options_ui::options_param(params, cmd)?,
+            dds_partial: partial_dds_field(params),
             jpeg: jpeg_options_ui::choice_param(params, cmd)?,
         })
     }
@@ -33,13 +51,22 @@ impl FormatChoices {
         Ok(FormatChoices {
             tga_bits: targa_options_ui::bits_param(params, cmd)?,
             dds: dds_options_ui::options_param(params, cmd)?,
+            dds_partial: partial_dds_field(params),
             jpeg: jpeg_options_ui::recorded_choice(params, cmd)?,
         })
     }
 
     /// The export settings with these answers applied.
-    pub fn apply(self, settings: ExportSettings) -> ExportSettings {
-        let settings = ExportSettings { tga_bits: self.tga_bits.or(settings.tga_bits), dds: self.dds.unwrap_or(settings.dds), ..settings };
+    pub fn apply(self, mut settings: ExportSettings) -> ExportSettings {
+        settings.tga_bits = self.tga_bits.or(settings.tga_bits);
+        if let Some(dds) = self.dds {
+            if self.dds_partial != Some(DdsField::Mipmaps) {
+                settings.dds.compression = dds.compression;
+            }
+            if self.dds_partial != Some(DdsField::Compression) {
+                settings.dds.mipmaps = dds.mipmaps;
+            }
+        }
         match self.jpeg {
             Some(j) => j.apply(settings),
             None => settings,
@@ -52,7 +79,12 @@ impl FormatChoices {
             step["tgaBits"] = bits.bits().into();
         }
         if let Some(dds) = self.dds {
-            dds_options_ui::record(dds, step);
+            if self.dds_partial != Some(DdsField::Mipmaps) {
+                step["ddsCompression"] = dds.compression.name().into();
+            }
+            if self.dds_partial != Some(DdsField::Compression) {
+                step["ddsMipmaps"] = dds.mipmaps.into();
+            }
         }
         if let Some(j) = self.jpeg {
             j.record(step);

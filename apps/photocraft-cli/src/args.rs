@@ -62,9 +62,9 @@ pub(crate) struct ExportArgs {
     /// A DPX's bits per sample. Without it: 8 for an 8-bit document, else 16
     #[arg(long, value_name = "8|10|12|16", value_parser = dpx_bits)]
     pub(crate) dpx_bits: Option<DpxBits>,
-    /// A DDS texture's compression: none (uncompressed, the default), bc1 (DXT1: alpha on or
-    /// off), bc2 (DXT3) or bc3 (DXT5)
-    #[arg(long, value_name = "none|bc1|bc2|bc3", value_parser = dds_compression)]
+    /// DDS storage: none (legacy uncompressed), bc1/bc2/bc3 (DXT), bc4/bc5 (R/RG data),
+    /// bc6h (HDR), bc7; signed, linear/sRGB variants, rgba-linear, rgba-srgb or rgba-float
+    #[arg(long, value_name = "FORMAT", value_parser = dds_compression)]
     pub(crate) dds_compression: Option<DdsCompression>,
     /// Also write a DDS texture's full mip chain
     #[arg(long)]
@@ -267,7 +267,9 @@ enum ValueError {
     TgaBits,
     #[error("expected 8, 10, 12 or 16")]
     DpxBits,
-    #[error("expected none, bc1, bc2 or bc3")]
+    #[error(
+        "expected DDS format: none, bc1..bc7, bc4-snorm, bc5-snorm, bc6h-signed, bc1-linear, bc2-linear, bc3-linear, bc1-srgb, bc2-srgb, bc3-srgb, bc7-srgb, rgba-linear, rgba-srgb or rgba-float"
+    )]
     DdsCompression,
     #[error("expected none, lzw or zip")]
     TiffCompression,

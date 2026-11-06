@@ -275,6 +275,33 @@ fn save_settings_start_at_the_opened_files_encoding() {
     assert!(app.save_settings().webp_lossless);
 }
 
+#[test]
+fn dds_automation_defaults_and_partial_options_keep_the_source_encoding() {
+    use photocraft_codecs::DdsCompression as C;
+    let mut app = app();
+    for compression in [C::Bc7Srgb, C::Bc6hSigned, C::Bc5Snorm] {
+        let doc = std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc);
+        doc.file_encoding.dds_format = Some(compression.storage_id());
+        doc.file_encoding.dds_mipmaps = Some(true);
+        let settings = app.save_settings();
+        assert_eq!(settings.dds.compression, compression);
+        assert!(settings.dds.mipmaps);
+        let choices = crate::FormatChoices::from_params(&json!({"ddsMipmaps":false}), "app.save").unwrap();
+        let settings = choices.apply(settings);
+        assert_eq!(settings.dds.compression, compression, "a mip-only override must keep HDR/signed storage");
+        assert!(!settings.dds.mipmaps);
+        let choices = crate::FormatChoices::from_params(&json!({"ddsCompression":"rgba-float"}), "app.save").unwrap();
+        let settings = choices.apply(app.save_settings());
+        assert_eq!(settings.dds.compression, C::RgbaFloat);
+        assert!(settings.dds.mipmaps, "a format-only override must keep the source mip choice");
+        let choices = crate::FormatChoices::from_params(&json!({"ddsMipmaps":false}), "app.save").unwrap();
+        let mut step = json!({});
+        choices.record(&mut step);
+        assert!(step.get("ddsCompression").is_none());
+        assert_eq!(step["ddsMipmaps"], false);
+    }
+}
+
 /// A browser download is only requested: the document takes the name but keeps its unsaved
 /// changes, so the leave-page guard stays armed (#4962). A confirmed write still saves it.
 #[test]

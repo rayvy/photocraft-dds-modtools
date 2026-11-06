@@ -26,8 +26,10 @@ pub(crate) struct SaveOpts {
     /// TIFF: the image compression (`"tiffCompression": "none" | "lzw" | "zip"`); unset, none.
     pub tiff_compression: Option<photocraft_codecs::TiffCompression>,
     /// DDS: the compression and whether to write the mip chain (`"ddsCompression"`,
-    /// `"ddsMipmaps"`); unset, uncompressed without mipmaps.
-    pub dds: photocraft_io::DdsOptions,
+    /// `"ddsMipmaps"`); each unset field keeps the source choice (new documents: uncompressed,
+    /// no mipmaps).
+    pub dds_compression: Option<photocraft_io::DdsCompression>,
+    pub dds_mipmaps: Option<bool>,
     /// PSD/PSB: embed the thumbnail resource (Preferences › File Handling › Image Previews).
     pub image_previews: bool,
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
@@ -44,7 +46,8 @@ impl Default for SaveOpts {
             tga_bits: None,
             dpx_bits: None,
             tiff_compression: None,
-            dds: photocraft_io::DdsOptions::default(),
+            dds_compression: None,
+            dds_mipmaps: None,
             image_previews: true,
             psd_maximize_compatibility: true,
         }
@@ -59,6 +62,7 @@ impl SaveOpts {
     /// Maximize Compatibility checkbox both start on).
     pub(crate) fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let file_handling = &s.prefs().file_handling;
+        let dds = dds_param(p, cmd)?;
         Ok(SaveOpts {
             quality: f64_param(p, "quality"),
             jpeg_format: jpeg_format_param(p, cmd)?,
@@ -66,7 +70,8 @@ impl SaveOpts {
             tga_bits: tga_bits_param(p, cmd)?,
             dpx_bits: dpx_bits_param(p, cmd)?,
             tiff_compression: tiff_compression_param(p, cmd)?,
-            dds: dds_param(p, cmd)?.unwrap_or_default(),
+            dds_compression: dds.filter(|_| p.get("ddsCompression").is_some_and(|v| !v.is_null())).map(|o| o.compression),
+            dds_mipmaps: p.get("ddsMipmaps").and_then(Value::as_bool),
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
             psd_maximize_compatibility: file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never,
         })
@@ -191,7 +196,12 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
     if let Some(c) = save.tiff_compression {
         opts.encode.tiff_compression = c;
     }
-    opts.encode.dds = save.dds;
+    if let Some(c) = save.dds_compression {
+        opts.encode.dds.compression = c;
+    }
+    if let Some(mipmaps) = save.dds_mipmaps {
+        opts.encode.dds.mipmaps = mipmaps;
+    }
     if let Some(q) = save.quality {
         let q = jpeg_quality(q);
         opts.encode.jpeg_quality = q;

@@ -50,7 +50,12 @@ pub fn park(app: &mut PhotocraftApp, path: String, copy: bool, record: &'static 
         return Err(crate::SAVE_OPTIONS_OPEN.into());
     }
     let doc = app.active_doc_id()?;
-    app.dds_options = Some(Prompt { doc, path, options: DdsOptions::default(), copy, record });
+    let mut options = DdsOptions::default();
+    if let Some(document) = app.session.documents().iter().find(|d| d.doc.id == doc) {
+        options.compression = document.doc.file_encoding.dds_format.and_then(DdsCompression::from_storage_id).unwrap_or_default();
+        options.mipmaps = document.doc.file_encoding.dds_mipmaps.unwrap_or(false);
+    }
+    app.dds_options = Some(Prompt { doc, path, options, copy, record });
     Ok(())
 }
 
@@ -62,6 +67,7 @@ pub(crate) fn compression_label(c: DdsCompression) -> &'static str {
         DdsCompression::Bc1 => "BC1 / DXT1",
         DdsCompression::Bc2 => "BC2 / DXT3",
         DdsCompression::Bc3 => "BC3 / DXT5",
+        _ => c.label(),
     }
 }
 
@@ -76,9 +82,22 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         crate::widgets::hairline(ui);
         ui.add_space(8.0);
         crate::widgets::section_label(ui, tl!("Compression"));
-        for c in DdsCompression::ALL {
+        for c in DdsCompression::ALL.into_iter().take(4) {
             ui.radio_value(&mut options.compression, c, compression_label(c));
         }
+        craft_ui::ComboBox::from_id_salt("dds-advanced-format")
+            .selected_text(if DdsCompression::ALL[..4].contains(&options.compression) {
+                "BC4–BC7 / HDR / sRGB…"
+            } else {
+                compression_label(options.compression)
+            })
+            .width(290.0)
+            .height(260.0)
+            .show_ui(ui, |ui| {
+                for c in DdsCompression::ALL.into_iter().skip(4) {
+                    ui.selectable_value(&mut options.compression, c, compression_label(c));
+                }
+            });
         ui.add_space(8.0);
         crate::widgets::checkbox(ui, &mut options.mipmaps, tl!("Generate Mipmaps"));
         ui.add_space(12.0);
@@ -137,7 +156,7 @@ mod tests {
         assert_eq!(options_param(&json!({}), "file.saveAs"), Ok(None));
         assert_eq!(options_param(&json!({"ddsCompression": "bc3"}), "file.saveAs"), Ok(Some(DdsOptions { compression: DdsCompression::Bc3, mipmaps: false })));
         assert_eq!(options_param(&json!({"ddsMipmaps": true}), "file.saveAs"), Ok(Some(DdsOptions { compression: DdsCompression::None, mipmaps: true })));
-        for bad in [json!({"ddsCompression": "bc7"}), json!({"ddsCompression": 3}), json!({"ddsMipmaps": "yes"})] {
+        for bad in [json!({"ddsCompression": "bc8"}), json!({"ddsCompression": 3}), json!({"ddsMipmaps": "yes"})] {
             assert!(options_param(&bad, "file.saveAs").is_err(), "{bad}");
         }
         let mut step = json!({"path": "a.dds"});

@@ -6,6 +6,14 @@ code and original assets are MIT OR Apache-2.0 (see [`LICENSE-MIT`](LICENSE-MIT)
 in the same change; third-party assets must be permissively licensed and keep their license file
 next to them.
 
+## DDS ModTools components
+
+| Component | Author | Source | License |
+|---|---|---|---|
+| `bcdec_rs` 0.2.1, linked DDS decoder | SMG / ScanMountGoat | <https://github.com/ScanMountGoat/image_dds/tree/5e1ef829f8c44980e21bdcda2e1ffb574b81b57b/bcdec_rs> | MIT, [`licenses/dds/bcdec_rs-LICENSE-MIT.txt`](licenses/dds/bcdec_rs-LICENSE-MIT.txt) |
+| Original `bcdec` decoder ported by `bcdec_rs` | Sergii Kudlai / iOrange | <https://github.com/iOrange/bcdec> | MIT alternative, [`licenses/dds/bcdec-LICENSE-MIT.txt`](licenses/dds/bcdec-LICENSE-MIT.txt) |
+| Optional external DirectXTex `texconv.exe` backend | Microsoft Corporation | <https://github.com/microsoft/DirectXTex/releases/tag/jul2025> | MIT; the installed backend includes `codecs/dds/LICENSE-DirectXTex.txt` |
+
 ## Bundled in the app
 
 | Path | Title | Author | Source | License |
@@ -88,7 +96,7 @@ The other built-in ICC profiles and the generated LUT looks are produced by code
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
-| `docs/brand/` (all files) | ArtCraft name, wordmark and mark | ArtCraft Team | getartcraft.com | Not open source; trademarks of the ArtCraft Team, [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) |
+| `docs/brand/LICENSE-brand.txt` | ArtCraft brand terms; logo assets removed from this modified distribution | ArtCraft Team | getartcraft.com | Original terms retained for attribution; ArtCraft marks are not redistributed in this fork's current tree |
 | `docs/images/photocraft-*.jpg` | PhotoCraft screenshots | PhotoCraft contributors (UI) | Rendered offscreen with the `snapshot` example | MIT OR Apache-2.0 (UI); the artwork in each is public domain, listed below |
 | `docs/images/preferences-apply-*.png` | Preferences before and after adding Apply (no artwork) | PhotoCraft contributors | PhotoCraft control-channel capture and offscreen `snapshot` example | MIT OR Apache-2.0 |
 | `docs/images/gradient-overlay-method-*.png` | Gradient Overlay Method selector, before and after (synthetic gradient) | @oRE-o | Rendered offscreen with the `snapshot` example; no external artwork | MIT OR Apache-2.0 |

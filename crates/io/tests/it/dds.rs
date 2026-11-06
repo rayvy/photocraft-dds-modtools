@@ -6,6 +6,92 @@
 
 use photocraft_io::*;
 
+#[test]
+fn legacy_dxt_no_edit_save_does_not_gamma_shift_pixels() {
+    let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgba, [128, 128, 128, 255].repeat(16)).unwrap();
+    let mut opts = ExportOptions::default();
+    opts.encode.dds.compression = DdsCompression::Bc3;
+    let input = photocraft_codecs::encode(&image, photocraft_codecs::Format::Dds, &opts.encode).unwrap();
+    let doc = import("legacy.dds", &input).unwrap().document;
+    let output = export(&doc, "legacy.dds", &opts).unwrap();
+    let before = photocraft_codecs::decode(&input).unwrap();
+    let after = photocraft_codecs::decode(&output.bytes).unwrap();
+    for (a, b) in before.data().iter().zip(after.data()) {
+        assert!(a.abs_diff(*b) <= 5, "no-edit DDS changed {a} to {b}");
+    }
+}
+
+#[test]
+fn explicit_linear_dxt_keeps_transfer_and_source_default() {
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_none() {
+        return;
+    }
+    let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgba, [128, 128, 128, 255].repeat(16)).unwrap();
+    let mut opts = ExportOptions::default();
+    opts.encode.dds.compression = DdsCompression::Bc1Linear;
+    let input = photocraft_codecs::encode(&image, photocraft_codecs::Format::Dds, &opts.encode).unwrap();
+    let doc = import("linear.dds", &input).unwrap().document;
+    assert!(doc.icc_profile.is_some());
+    let mut opts = ExportOptions::default();
+    apply_file_encoding(&doc, &mut opts.encode);
+    assert_eq!(opts.encode.dds.compression, DdsCompression::Bc1Linear);
+    let output = export(&doc, "linear.dds", &opts).unwrap();
+    assert_eq!(u32::from_le_bytes(output.bytes[128..132].try_into().unwrap()), 71);
+    let before = photocraft_codecs::decode(&input).unwrap();
+    let after = photocraft_codecs::decode(&output.bytes).unwrap();
+    assert!(before.data().iter().zip(after.data()).all(|(a, b)| a.abs_diff(*b) <= 5));
+}
+
+#[test]
+fn hdr_dds_keeps_linear_floats_through_document_and_export() {
+    let mut b = vec![0u8; 148];
+    b[..4].copy_from_slice(b"DDS ");
+    for (at, v) in
+        [(4, 124u32), (8, 0x1007), (12, 4), (16, 4), (76, 32), (80, 4), (84, u32::from_le_bytes(*b"DX10")), (108, 0x1000), (128, 95), (132, 3), (140, 1)]
+    {
+        b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    b.extend([111, 140, 16, 56, 135, 24, 66, 112, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let doc = import("hdr.dds", &b).unwrap().document;
+    assert_eq!(doc.depth, photocraft_color::SampleType::F32);
+    assert!(doc.icc_profile.is_some(), "BC6H must carry a linear profile into the document");
+    assert_eq!(doc.file_encoding.dds_format, Some(95));
+    let mut opts = ExportOptions::default();
+    opts.encode.dds.compression = DdsCompression::from_name("rgba-float").unwrap();
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_some() {
+        let out = export(&doc, "roundtrip.dds", &opts).unwrap();
+        let im = photocraft_codecs::decode(&out.bytes).unwrap();
+        assert!(im.to_normalized().as_chunks::<4>().0.iter().all(|p| (p[0] - 4.0).abs() < 0.04 && (p[1] - 2.0).abs() < 0.04));
+    }
+}
+
+#[test]
+fn signed_rg_data_survives_document_and_psd() {
+    let mut b = vec![0u8; 148];
+    b[..4].copy_from_slice(b"DDS ");
+    for (at, v) in
+        [(4, 124u32), (8, 0x1007), (12, 4), (16, 4), (76, 32), (80, 4), (84, u32::from_le_bytes(*b"DX10")), (108, 0x1000), (128, 84), (132, 3), (140, 1)]
+    {
+        b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    b.extend([129, 127, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0]);
+    let doc = import("signed.dds", &b).unwrap().document;
+    let px = doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 4, 4));
+    assert!(px.as_chunks::<4>().0.iter().all(|p| p[0] == -1.0 && (p[1] - 64.0 / 127.0).abs() < 0.001 && p[3] == 1.0));
+    assert!(doc.channels.is_empty());
+    let psd = export(&doc, "signed.psd", &ExportOptions::default()).unwrap();
+    let doc = import("signed.psd", &psd.bytes).unwrap().document;
+    let px = doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 4, 4));
+    assert!(px.as_chunks::<4>().0.iter().all(|p| p[0] < -0.98 && p[1] > 0.49));
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_some() {
+        let mut opts = ExportOptions::default();
+        opts.encode.dds.compression = DdsCompression::Bc5Snorm;
+        let b = export(&doc, "signed.dds", &opts).unwrap().bytes;
+        let im = photocraft_codecs::decode(&b).unwrap();
+        assert!(im.to_normalized().as_chunks::<3>().0.iter().all(|p| p[0] < -0.98 && p[1] > 0.49));
+    }
+}
+
 /// A 16×8 RGBA DDS with the full mip chain, uncompressed so every level is exact.
 fn dds_with_mips() -> Vec<u8> {
     let ch = 4;

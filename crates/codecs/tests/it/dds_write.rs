@@ -311,7 +311,10 @@ fn block_compressed_mip_chains_have_a_block_per_small_level() {
 #[test]
 fn strips_and_tiny_textures_encode_with_every_option() {
     for (w, h) in [(1, 1), (1, 9), (9, 1), (2, 3), (3, 2)] {
-        for compression in DdsCompression::ALL {
+        for compression in DdsCompression::ALL.into_iter().filter(|c| {
+            matches!(c, DdsCompression::None | DdsCompression::Bc1 | DdsCompression::Bc2 | DdsCompression::Bc3)
+                || std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_some()
+        }) {
             for mipmaps in [false, true] {
                 let img = ramp(w, h, ChannelLayout::Rgba);
                 let b = encode(&img, Format::Dds, &opts(compression, mipmaps)).unwrap_or_else(|e| panic!("{w}x{h} {compression:?} {mipmaps}: {e}"));
@@ -337,11 +340,91 @@ fn fidelity_warnings_follow_the_compression() {
 fn compression_names_round_trip() {
     for c in DdsCompression::ALL {
         assert_eq!(DdsCompression::from_name(c.name()), Some(c));
+        assert_eq!(DdsCompression::from_storage_id(c.storage_id()), Some(c));
     }
     assert_eq!(DdsCompression::from_name("DXT5"), Some(DdsCompression::Bc3));
     assert_eq!(DdsCompression::from_name("dxt1"), Some(DdsCompression::Bc1));
-    for bad in ["", "bc7", "dxt2", "uncompressed "] {
+    for bad in ["", "bc8", "dxt2", "uncompressed "] {
         assert_eq!(DdsCompression::from_name(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn advanced_encoder_preserves_hdr_and_signed_samples() {
+    // The delivery harness supplies a verified backend. Without it, error is explicit.
+    let hdr = Image::from_f32(4, 4, ChannelLayout::Rgb, &[4.0, 2.0, 0.5].repeat(16)).unwrap();
+    let c = DdsCompression::from_name("bc6h").expect("BC6H option");
+    let result = encode(&hdr, Format::Dds, &opts(c, false));
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_none() {
+        assert!(result.unwrap_err().to_string().contains("backend"));
+        return;
+    }
+    let b = result.expect("native BC6H encoder");
+    assert_eq!(le32(&b, 128), 95);
+    let im = decode(&b).unwrap();
+    for p in im.to_normalized().as_chunks::<3>().0.iter() {
+        assert!((p[0] - 4.0).abs() < 0.04 && (p[1] - 2.0).abs() < 0.04);
+    }
+    let signed = Image::from_f32(4, 4, ChannelLayout::Rgb, &[-1.0, 0.5, 0.0].repeat(16)).unwrap();
+    let b = encode(&signed, Format::Dds, &opts(DdsCompression::Bc5Snorm, false)).unwrap();
+    let values = decode(&b).unwrap().to_normalized();
+    assert!(values.as_chunks::<3>().0.iter().all(|p| p[0] < -0.98 && (p[1] - 0.5).abs() < 0.02 && p[2] == 0.0));
+    let signed_hdr = Image::from_f32(4, 4, ChannelLayout::Rgb, &[-4.0, 2.0, 0.5].repeat(16)).unwrap();
+    let b = encode(&signed_hdr, Format::Dds, &opts(DdsCompression::Bc6hSigned, false)).unwrap();
+    assert_eq!(le32(&b, 128), 96);
+    assert!(decode(&b).unwrap().to_normalized().as_chunks::<3>().0.iter().all(|p| (p[0] + 4.0).abs() < 0.08 && (p[1] - 2.0).abs() < 0.08));
+    let b = encode(&signed_hdr, Format::Dds, &opts(DdsCompression::RgbaFloat, false)).unwrap();
+    assert_eq!(decode(&b).unwrap().to_normalized(), [-4.0, 2.0, 0.5, 1.0].repeat(16));
+}
+
+#[test]
+fn bc7_retains_rgb_under_zero_alpha_and_srgb_header() {
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_none() {
+        return;
+    }
+    let image = Image::from_u8(4, 4, ChannelLayout::Rgba, [180, 60, 220, 0].repeat(16)).unwrap();
+    let b = encode(&image, Format::Dds, &opts(DdsCompression::Bc7Srgb, true)).unwrap();
+    assert_eq!(le32(&b, 128), 99);
+    let im = decode(&b).unwrap();
+    for p in im.data().as_chunks::<4>().0.iter() {
+        assert!(p[0].abs_diff(180) < 5 && p[1].abs_diff(60) < 5 && p[2].abs_diff(220) < 5 && p[3] == 0, "{p:?}");
+    }
+    assert_eq!(photocraft_codecs::decode_dds_levels(&b, &Default::default()).unwrap().len(), 3);
+}
+
+#[test]
+fn data_and_hdr_formats_warn_when_alpha_is_discarded() {
+    let image = Image::from_u8(4, 4, ChannelLayout::Rgba, [10, 20, 30, 40].repeat(16)).unwrap();
+    for c in [DdsCompression::Bc4, DdsCompression::Bc5, DdsCompression::Bc6h] {
+        assert!(fidelity_warnings_with(&image, Format::Dds, &opts(c, false)).contains(&FidelityWarning::AlphaDiscarded), "{c:?}");
+    }
+}
+
+#[test]
+fn bc7_partial_edge_blocks_keep_packed_alpha() {
+    if std::env::var_os("PHOTOCRAFT_DDS_BACKEND").is_none() {
+        return;
+    }
+    let mut pixels = Vec::new();
+    for y in 0..6u32 {
+        for x in 0..9u32 {
+            pixels.extend((0..3).map(|c| ((x * 13 + y * 7 + 93 + c * 50) % 256) as u8));
+            pixels.push(if x < 4 {
+                255
+            } else if x == 4 {
+                128
+            } else {
+                0
+            });
+        }
+    }
+    let image = Image::from_u8(9, 6, ChannelLayout::Rgba, pixels.clone()).unwrap();
+    for c in [DdsCompression::Bc7, DdsCompression::Bc7Srgb] {
+        let bytes = encode(&image, Format::Dds, &opts(c, false)).unwrap();
+        let decoded = decode(&bytes).unwrap();
+        for (actual, expected) in decoded.data().as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0) {
+            assert!(actual[3].abs_diff(expected[3]) <= 18, "{c:?}: alpha {} want {}", actual[3], expected[3]);
+        }
     }
 }
 

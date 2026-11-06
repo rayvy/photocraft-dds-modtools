@@ -935,6 +935,11 @@ pub struct Document {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct FileEncoding {
+    /// DDS storage ID (DXGI for explicit formats, FourCC for legacy DXT; zero uncompressed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dds_format: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dds_mipmaps: Option<bool>,
     /// JPEG quality (estimated from the file's quantisation tables on open).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jpeg_quality: Option<u8>,

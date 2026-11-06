@@ -386,6 +386,8 @@ impl PhotocraftApp {
         let mut settings = ExportSettings { image_previews: previews, psd_maximize_compatibility: maximize, ..ExportSettings::default() };
         if let Some(st) = self.session.active() {
             let e = &st.doc.file_encoding;
+            settings.dds.compression = e.dds_format.and_then(photocraft_io::DdsCompression::from_storage_id).unwrap_or_default();
+            settings.dds.mipmaps = e.dds_mipmaps.unwrap_or(false);
             settings.jpeg_quality = e.jpeg_quality.map(|q| q.clamp(1, 100));
             settings.webp_lossless = e.webp_lossless.unwrap_or(settings.webp_lossless);
             settings.webp_quality = e.webp_quality.map(|q| q.min(100));

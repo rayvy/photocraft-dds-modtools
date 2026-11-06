@@ -23,5 +23,7 @@ fn native_first_launch_follows_os_ui_preferences() {
     h.run_steps(4);
     assert_eq!(h.state().session.prefs().interface.language, "auto");
     assert_eq!(i18n::current(), expected, "native language preferences: {tags:?}");
-    assert!(h.query_by_label(i18n::tr(expected, "File")).is_some(), "the first-launch menu must use the OS UI language");
+    let file = i18n::tr(expected, "File");
+    // Non-Latin menus retain the English access key, e.g. "Файл(F)" (#5863).
+    assert!(h.query_by_label(file).is_some() || h.query_by_label(&format!("{file}(F)")).is_some(), "the first-launch menu must use the OS UI language");
 }

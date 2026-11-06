@@ -1199,7 +1199,7 @@ fn a_stereo_png_keeps_its_stereo_mark_on_save() {
 fn dds_writes_the_alpha_channel_as_the_texture_alpha() {
     use photocraft_codecs::DdsCompression;
     let d = with_alpha_channel(single(ColorMode::Rgb, SampleType::U8, false), "Alpha 1");
-    for compression in DdsCompression::ALL {
+    for compression in DdsCompression::ALL.into_iter().filter(|c| !c.is_data() && !matches!(c, DdsCompression::Bc6h | DdsCompression::Bc6hSigned)) {
         let mut opts = ExportOptions::default();
         opts.encode.dds.compression = compression;
         let r = export(&d, "a.dds", &opts).unwrap();
@@ -1211,13 +1211,13 @@ fn dds_writes_the_alpha_channel_as_the_texture_alpha() {
             DdsCompression::Bc2 => 9.0,
             _ => 18.0,
         };
-        for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
+        for (i, px) in img.to_normalized().as_chunks::<4>().0.iter().enumerate() {
             let x = i as u32 % w;
             let want = alpha_value(x) * 255.0;
-            if compression == DdsCompression::Bc1 && x == 4 {
+            if matches!(compression, DdsCompression::Bc1 | DdsCompression::Bc1Srgb | DdsCompression::Bc1Linear) && x == 4 {
                 continue; // half opacity sits on BC1's on/off threshold
             }
-            assert!((f32::from(px[3]) - want).abs() <= tolerance, "{compression:?} pixel {i}: alpha {} want {want}", px[3]);
+            assert!((px[3] * 255.0 - want).abs() <= tolerance, "{compression:?} pixel {i}: alpha {} want {want}", px[3]);
         }
     }
     // Two alpha channels: Photoshop's rule for Targa, none of them is written.

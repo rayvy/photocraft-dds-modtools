@@ -40,7 +40,7 @@ let out = encode(&img, Format::Tiff, &EncodeOptions::default())?;
 | BMP | yes | yes | U8 | RGB, RGBA | yes | no | no | no | no | no | no | `image` |
 | TGA | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | no | `image` (read) / built in (RLE write, one scanline per packet) |
 | ICO | yes | yes | U8 | RGBA (at most 256×256) | yes | no | no | no | no | no | no | `image` |
-| DDS | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | yes (BC1–BC3, when `EncodeOptions::dds` asks for one) | built in |
+| DDS | yes | yes | U8, F32 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | yes (BC1–BC7) | built-in reader/legacy writer; optional Windows encoder |
 | Netpbm (PBM/PGM/PPM/PAM/PFM) | yes | yes | U8, U16, F32 (float: PFM gray/RGB only) | all six (PAM `CMYK`/`CMYK_ALPHA`) | yes (PAM) | no | no | no | no | no | no | built in |
 | QOI | yes | yes | U8 | RGB, RGBA | yes | no | no | no | no | no | no | `image` |
 | OpenEXR | yes | yes | F16, F32 | Y, YA, RGB, RGBA | yes | no | no | no | no | no | no | `exr` |
@@ -73,22 +73,13 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
 
 ## Documented asymmetries and limitations
 
-* **DDS.** The top mip level of a 2D texture: uncompressed pixels described by channel masks
-  (8, 16, 24 or 32 bits, RGB or luminance, with or without alpha) or BC1/BC2/BC3 (DXT1/DXT3/DXT5),
-  with the legacy header or the DX10 one. Uncompressed row padding follows the header's
-  `DDSD_PITCH` stride; without that flag, rows are tightly packed. Everything opens as U8;
-  `decode_dds_levels` reads every mip level (for the File › Open "mipmaps as layers" choice)
-  and `dds_info` reports the texture's size, mip count, alpha and compression from its header
-  without decoding. Cubemaps, texture arrays, volume textures, premultiplied DXT2/DXT4 and other formats
-  (BC4–BC7, float) are refused with `CodecError::Unsupported`. Writing (`EncodeOptions::dds`) makes
-  a 2D texture with the legacy header: uncompressed by default (BGRA, BGRX, or luminance with or
-  without alpha, so it reads back exactly), or BC1/BC2/BC3. The block encoder is our own, from
-  Microsoft's public block-compression documentation: RGB565 endpoints fitted along each block's
-  principal axis and refined by least squares, indices picked against the palette the reader
-  decodes; BC1 turns texels under half opacity into its transparent black, and BC3 picks
-  whichever alpha mode fits. `mipmaps` adds the full chain down to 1×1, each level a box filter
-  of the one above (the last column and row of an odd-sized level average three pixels, so none
-  is dropped). Cubemaps, arrays, BC4–BC7 and sRGB (DX10-only) formats aren't written.
+* **DDS (ModTools fork).** BC1–BC7 2D read/write, including BC4/5 SNORM,
+  BC6H HDR, sRGB variants and uncompressed RGBA32F. BC4 is gray/red data, BC5
+  independent R/G with zero B, never alpha. Signed and HDR decode to F32.
+  Advanced output needs the optional Windows DirectXTex backend beside the app;
+  decoding remains pure Rust and web compatible. Alpha-as-channel, mip import,
+  flip and generated mip export remain available. Cubes/arrays/volume and
+  premultiplied alpha are rejected. See [DDS-MODTOOLS.md](../../DDS-MODTOOLS.md).
 
 * **FITS.** The image in the primary HDU, or the first `IMAGE` extension, is read; `NAXIS3 = 3`
   opens as RGB and any other plane count opens the first plane with `DecodeWarning::MorePages`.

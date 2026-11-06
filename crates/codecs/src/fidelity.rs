@@ -174,6 +174,11 @@ pub(crate) fn plan(image: &Image, format: Format, opts: &EncodeOptions) -> Plan 
         // CIELab has no float form: float Lab is written with 16 bits.
         Format::Tiff if layout.is_lab() && sample.is_float() => Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: SampleType::U16 },
         // A block-compressed DDS stores RGBA whatever the source; uncompressed keeps gray and RGB.
+        Format::Dds if opts.dds.compression.is_data() || matches!(opts.dds.compression, DdsCompression::Bc6h | DdsCompression::Bc6hSigned) => Plan {
+            layout: if matches!(opts.dds.compression, DdsCompression::Bc4 | DdsCompression::Bc4Snorm) { ChannelLayout::Gray } else { ChannelLayout::Rgb },
+            sample: if opts.dds.compression.is_float() { SampleType::F32 } else { SampleType::U8 },
+        },
+        Format::Dds if opts.dds.compression.is_float() => Plan { layout: ChannelLayout::Rgba, sample: SampleType::F32 },
         Format::Dds if opts.dds.compression.is_block() => Plan { layout: ChannelLayout::Rgba, sample: SampleType::U8 },
         _ => Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: pick_sample(sample, c.depths) },
     }
@@ -228,7 +233,8 @@ pub fn fidelity_warnings_with(image: &Image, format: Format, opts: &EncodeOption
         w.push(W::AlphaDiscarded);
     }
     // An IFF/ILBM mask plane holds one bit per pixel.
-    let binary_alpha = matches!(format, Format::Gif | Format::Iff) || (format == Format::Dds && opts.dds.compression == DdsCompression::Bc1);
+    let binary_alpha = matches!(format, Format::Gif | Format::Iff)
+        || (format == Format::Dds && matches!(opts.dds.compression, DdsCompression::Bc1 | DdsCompression::Bc1Srgb | DdsCompression::Bc1Linear));
     if binary_alpha && p.layout.has_alpha() && image.has_translucency() {
         w.push(W::AlphaBinarized);
     }

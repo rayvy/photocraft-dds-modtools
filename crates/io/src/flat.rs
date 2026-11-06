@@ -125,6 +125,12 @@ pub fn file_encoding(bytes: &[u8]) -> photocraft_doc::FileEncoding {
 fn file_encoding_as(format: Option<Format>, bytes: &[u8]) -> photocraft_doc::FileEncoding {
     let mut e = photocraft_doc::FileEncoding::default();
     match format {
+        Some(Format::Dds) => {
+            if let Ok(info) = codecs::dds_info(bytes) {
+                e.dds_format = info.compression.map(codecs::DdsCompression::storage_id);
+                e.dds_mipmaps = Some(info.levels > 1);
+            }
+        }
         Some(Format::Jpeg) => e.jpeg_quality = codecs::jpeg_quality(bytes),
         Some(Format::Png) => e.png_stereo = codecs::png_stereo(bytes).map(codecs::PngStereo::mode),
         Some(Format::WebP) => match codecs::webp_encoding(bytes) {
@@ -158,6 +164,10 @@ pub fn apply_file_encoding(doc: &Document, opts: &mut codecs::EncodeOptions) {
         opts.webp_quality = q.min(100);
     }
     opts.png_stereo = e.png_stereo.and_then(codecs::PngStereo::from_mode);
+    if let Some(c) = e.dds_format.and_then(codecs::DdsCompression::from_storage_id) {
+        opts.dds.compression = c;
+        opts.dds.mipmaps = e.dds_mipmaps.unwrap_or(false);
+    }
 }
 
 /// Photoshop opens a 32-bit Targa as an opaque Background plus an "Alpha 1" channel holding the
@@ -299,6 +309,13 @@ fn import_dds_levels(name: &str, mut levels: Vec<Image>, bytes: &[u8], opts: &Im
         tga_alpha_to_channel(&mut r.document)?;
     }
     r.document.file_encoding = file_encoding_as(Some(Format::Dds), bytes);
+    if codecs::dds_info(bytes)?.linear {
+        r.document.icc_profile = Some(if r.document.mode == ColorMode::Grayscale {
+            photocraft_cms::builtin::linear_gray().to_bytes()
+        } else {
+            photocraft_cms::Builtin::LinearSrgb.profile().to_bytes()
+        });
+    }
     if levels.len() == 1 {
         return Ok(r);
     }
@@ -751,7 +768,21 @@ pub(crate) fn export_flat_with(doc: &Document, format: Format, opts: &ExportOpti
         img = cmyk_image_to_srgb(&img)?;
         warnings.push(format!("CMYK converted to sRGB for {format:?} through the document's colour profile"));
     }
-    if matches!(format, Format::OpenExr | Format::Hdr) {
+    if format == Format::Dds {
+        let c = opts.encode.dds.compression;
+        // Normal maps and signed channels are numeric data: never gamma-transform them.
+        if !c.is_data() {
+            let target = if c.is_srgb() { Builtin::Srgb } else { Builtin::LinearSrgb };
+            let sample = if c.is_float() { CSample::F32 } else { img.sample_type() };
+            if let Some(converted) = convert_rgb(&img, target.profile(), Intent::RelativeColorimetric, false, sample)? {
+                img = converted;
+            } else if let Some(converted) =
+                convert_gray(&img, if c.is_srgb() { Builtin::SGray.profile() } else { photocraft_cms::builtin::linear_gray() }, sample)?
+            {
+                img = converted;
+            }
+        }
+    } else if matches!(format, Format::OpenExr | Format::Hdr) {
         // OpenEXR and Radiance HDR store linear light (read back as linear sRGB or linear gray,
         // see [`import_flat`]).
         if let Some(linear) = convert_rgb(&img, Builtin::LinearSrgb.profile(), Intent::RelativeColorimetric, false, CSample::F32)? {

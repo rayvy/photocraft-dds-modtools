@@ -66,6 +66,109 @@ const WHITE: u16 = 0xffff;
 const INDICES_0123: [u8; 4] = [0x04, 0x0e, 0, 0];
 
 #[test]
+fn decodes_bc7_and_independent_bc5_channels() {
+    let mut b = dx10(3, 2, 98, 3, 0, 1);
+    b.extend([0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let im = decode(&b).expect("BC7 mode 6");
+    assert_eq!(im.data(), &[0; 24]);
+    let limits = DecodeOptions { limits: Limits { max_alloc: 24, ..Default::default() }, ..Default::default() };
+    assert_eq!(decode_as_with(Format::Dds, &b, &limits).unwrap().data(), &[0; 24]);
+    let mut b = dx10(4, 4, 83, 3, 0, 1);
+    b.extend([255, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0]);
+    let im = decode(&b).expect("BC5 RG data");
+    assert_eq!(im.layout(), ChannelLayout::Rgb);
+    assert!(im.data().as_chunks::<3>().0.iter().all(|p| *p == [255, 64, 0]));
+}
+
+#[test]
+fn decodes_signed_bc4_without_clipping() {
+    let mut b = dx10(4, 4, 81, 3, 0, 1);
+    b.extend([129, 127, 0, 0, 0, 0, 0, 0]);
+    let im = decode(&b).expect("BC4 SNORM");
+    assert_eq!(im.sample_type(), SampleType::F32);
+    assert!(im.to_normalized().iter().all(|v| *v == -1.0));
+}
+
+#[test]
+fn rejects_premultiplied_dx10_and_empty_array() {
+    let mut b = dx10(4, 4, 98, 3, 0, 1);
+    b[144..148].copy_from_slice(&2u32.to_le_bytes());
+    b.extend([0u8; 16]);
+    assert!(decode(&b).is_err());
+    b[144..148].fill(0);
+    b[144..148].copy_from_slice(&4u32.to_le_bytes());
+    assert!(decode(&b).is_ok(), "CUSTOM is independent fourth-channel data, not premultiplication");
+    b[144..148].fill(0);
+    b[140..144].fill(0);
+    assert!(decode(&b).is_err());
+}
+
+#[test]
+fn decodes_bc6h_hdr_values_and_checks_advanced_mip_bounds() {
+    // Synthetic constant RGB(4,2,0.5), compressed by DirectXTex 2025.7.10.1.
+    let mut b = dx10(4, 4, 95, 3, 0, 1);
+    b.extend([111, 140, 16, 56, 135, 24, 66, 112, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let im = decode(&b).expect("BC6H HDR");
+    assert_eq!(im.sample_type(), SampleType::F32);
+    for p in im.to_normalized().as_chunks::<3>().0.iter() {
+        assert!((p[0] - 4.0).abs() < 0.03 && (p[1] - 2.0).abs() < 0.03 && (p[2] - 0.5).abs() < 0.01);
+    }
+    for n in 0..b.len() {
+        assert!(decode_as(Format::Dds, &b[..n]).is_err(), "truncated length {n}");
+    }
+    b[8..12].copy_from_slice(&(0x1007u32 | 0x20000).to_le_bytes());
+    b[28..32].copy_from_slice(&3u32.to_le_bytes());
+    b.extend([0; 32]);
+    let levels = photocraft_codecs::decode_dds_levels(&b, &DecodeOptions::default()).unwrap();
+    assert_eq!(levels.iter().map(|im| im.dimensions()).collect::<Vec<_>>(), [(4, 4), (2, 2), (1, 1)]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "local private corpus: PHOTOCRAFT_DDS_CORPUS; never commit textures"]
+fn local_dds_corpus_decodes_without_modifying_sources() {
+    fn visit(path: &std::path::Path, depth: usize, count: &mut usize, formats: &mut std::collections::BTreeMap<String, usize>) {
+        assert!(depth < 32);
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                visit(&entry.path(), depth + 1, count, formats);
+            } else if entry.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("dds")) {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                let info = photocraft_codecs::dds_info(&bytes).unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
+                let image = decode(&bytes).unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
+                assert_eq!(image.dimensions(), (info.width, info.height));
+                *formats.entry(format!("{:?}", info.compression)).or_default() += 1;
+                *count += 1;
+                assert!(*count < 100000);
+            }
+        }
+    }
+    let root = std::env::var_os("PHOTOCRAFT_DDS_CORPUS").expect("explicit local corpus path");
+    let (mut count, mut formats) = (0, std::collections::BTreeMap::new());
+    visit(std::path::Path::new(&root), 0, &mut count, &mut formats);
+    assert!(count > 0);
+    eprintln!("DDS corpus: {count} files, {formats:?}");
+}
+
+#[test]
+#[ignore = "release performance measurement on a synthetic 30 MP BC7 texture"]
+fn bc7_decode_30_mp_timing() {
+    let (w, h) = (6336u32, 4752u32);
+    let mut b = dx10(w, h, 98, 3, 0, 1);
+    let block = [0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    b.extend(block.repeat((w.div_ceil(4) * h.div_ceil(4)) as usize));
+    let start = std::time::Instant::now();
+    let image = decode(&b).unwrap();
+    assert_eq!(image.data().len(), w as usize * h as usize * 4);
+    eprintln!("BC7 decode: {w}x{h}, {} bytes, {:.1} ms", image.data().len(), start.elapsed().as_secs_f64() * 1000.0);
+}
+
+#[test]
 fn dds_is_readable_and_writable() {
     assert_eq!(from_extension("texture.DDS"), Some(Format::Dds));
     assert!(caps(Format::Dds).read && caps(Format::Dds).write);
@@ -367,8 +470,8 @@ fn refuses_cubemaps_arrays_and_volumes() {
     unsupported(&dx10(4, 4, 71, 3, 0x4, 1), "cubemap");
     unsupported(&dx10(4, 4, 71, 3, 0, 6), "array");
     unsupported(&dx10(4, 4, 71, 4, 0, 1), "2D");
-    unsupported(&dx10(4, 4, 98, 3, 0, 1), "98"); // BC7_UNORM
-    unsupported(&compressed(4, 4, b"ATI2"), "ATI2");
+    unsupported(&dx10(4, 4, 100, 3, 0, 1), "100"); // unsupported video format
+    unsupported(&compressed(4, 4, b"XYZ!"), "XYZ!");
     unsupported(&compressed(4, 4, b"DXT2"), "premultiplied");
 }
 

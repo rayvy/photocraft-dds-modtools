@@ -80,7 +80,7 @@ fn scripted_dds_options_and_other_formats_skip_the_prompt() {
     crate::menus::invoke(h.state_mut(), &ctx, "file.saveAs", json!({"path": "s.dds", "ddsCompression": "bc1"})).unwrap();
     crate::menus::invoke(h.state_mut(), &ctx, "file.saveAs", json!({"path": "m.dds", "ddsMipmaps": true})).unwrap();
     assert!(h.state().dds_options.is_none());
-    for bad in [json!({"ddsCompression": "bc7"}), json!({"ddsMipmaps": 1})] {
+    for bad in [json!({"ddsCompression": "bc8"}), json!({"ddsMipmaps": 1})] {
         let mut p = bad.clone();
         p["path"] = json!("bad.dds");
         assert!(crate::menus::invoke(h.state_mut(), &ctx, "file.saveAs", p).is_err(), "{bad}");
@@ -149,7 +149,7 @@ fn recorded_dds_saves_keep_their_options_and_replay_without_asking() {
         &[
             ("file.saveAs".into(), json!({"path": "t.dds", "ddsCompression": "bc1", "ddsMipmaps": false})),
             ("file.saveACopy".into(), json!({"path": "copy.dds", "ddsCompression": "none", "ddsMipmaps": true})),
-            ("file.saveAs".into(), json!({"path": "s.dds", "ddsCompression": "bc2", "ddsMipmaps": false}))
+            ("file.saveAs".into(), json!({"path": "s.dds", "ddsCompression": "bc2"}))
         ]
     );
     writes.borrow_mut().clear();

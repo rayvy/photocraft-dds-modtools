@@ -1,14 +1,10 @@
 //! DirectDraw Surface (DDS) textures, after Microsoft's public DDS documentation ("DDS",
 //! "DDS_HEADER", "DDS_PIXELFORMAT", "DDS_HEADER_DXT10").
 //!
-//! Reading: a 2D texture, its top mip level or the whole chain, either uncompressed (8 to 32
-//! bits per pixel described by channel masks, RGB or luminance) or block-compressed BC1/BC2/BC3
-//! (DXT1/DXT3/DXT5), with or without the DX10 header. Cubemaps, texture arrays and volume
-//! textures are refused rather than flattened to one face or slice.
-//!
-//! Writing: a 2D texture, uncompressed (BGRA or BGRX, luminance with or without alpha) or
-//! BC1/BC2/BC3, optionally with its full mip chain. The legacy header describes all of these,
-//! so no DX10 header is written; formats only DXGI can name (BC4–BC7, sRGB) aren't written.
+//! Reading: checked single 2D legacy/DX10 surfaces, BC1–BC7 and RGBA32F, including
+//! signed BC4/5 and BC6H HDR. Cubes, arrays, volume and premultiplied alpha are refused.
+//! Writing: built-in legacy uncompressed/BC1–BC3, or the optional Windows DirectXTex
+//! backend for advanced DXGI formats. See DDS-MODTOOLS.md for transfer/data semantics.
 
 use std::borrow::Cow;
 
@@ -91,6 +87,7 @@ enum Encoding {
     Bc1,
     Bc2,
     Bc3,
+    Advanced(DdsCompression),
 }
 
 impl Encoding {
@@ -117,6 +114,7 @@ impl Encoding {
             Encoding::Bc1 => DdsCompression::Bc1,
             Encoding::Bc2 => DdsCompression::Bc2,
             Encoding::Bc3 => DdsCompression::Bc3,
+            Encoding::Advanced(c) => *c,
         })
     }
 
@@ -125,12 +123,15 @@ impl Encoding {
     fn has_alpha(&self) -> bool {
         match self {
             Encoding::Masks { fields, .. } => fields[3].is_some(),
+            Encoding::Advanced(c) => !c.is_data() && !matches!(c, DdsCompression::Bc6h | DdsCompression::Bc6hSigned),
             _ => true,
         }
     }
 
     fn layout(&self) -> ChannelLayout {
         match self {
+            Encoding::Advanced(DdsCompression::Bc4 | DdsCompression::Bc4Snorm) => ChannelLayout::Gray,
+            Encoding::Advanced(c) if c.is_data() || matches!(c, DdsCompression::Bc6h | DdsCompression::Bc6hSigned) => ChannelLayout::Rgb,
             Encoding::Masks { gray: true, fields, .. } if fields[3].is_some() => ChannelLayout::GrayA,
             Encoding::Masks { gray: true, .. } => ChannelLayout::Gray,
             Encoding::Masks { fields, .. } if fields[3].is_none() => ChannelLayout::Rgb,
@@ -154,6 +155,20 @@ impl Encoding {
                 }
                 (row_bytes, h)
             }
+            Encoding::Advanced(DdsCompression::RgbaLinear | DdsCompression::RgbaSrgb | DdsCompression::RgbaFloat) => {
+                let bytes = if matches!(self, Encoding::Advanced(DdsCompression::RgbaFloat)) { 16 } else { 4 };
+                let packed = w.checked_mul(bytes).ok_or_else(overflow)?;
+                let row = pitch.map(|p| p as usize).unwrap_or(packed);
+                if row < packed {
+                    return Err(bad("row pitch smaller than pixel row"));
+                }
+                (row, h)
+            }
+            Encoding::Advanced(c) => {
+                let block =
+                    if matches!(c, DdsCompression::Bc4 | DdsCompression::Bc4Snorm | DdsCompression::Bc1Srgb | DdsCompression::Bc1Linear) { 8 } else { 16 };
+                (w.div_ceil(4).checked_mul(block).ok_or_else(overflow)?, h.div_ceil(4))
+            }
             Encoding::Bc1 | Encoding::Bc2 | Encoding::Bc3 => {
                 let block = if matches!(self, Encoding::Bc1) { 8 } else { 16 };
                 (w.div_ceil(4).checked_mul(block).ok_or_else(overflow)?, h.div_ceil(4))
@@ -170,11 +185,15 @@ fn legacy_encoding(b: &[u8]) -> Result<Encoding, CodecError> {
     let alpha = if flags & DDPF_ALPHAPIXELS != 0 { le32(b, 104)? } else { 0 };
     if flags & DDPF_FOURCC != 0 {
         return match &fourcc.to_le_bytes() {
+            b"ATI1" | b"BC4U" => Ok(Encoding::Advanced(DdsCompression::Bc4)),
+            b"ATI2" | b"BC5U" => Ok(Encoding::Advanced(DdsCompression::Bc5)),
+            b"BC4S" => Ok(Encoding::Advanced(DdsCompression::Bc4Snorm)),
+            b"BC5S" => Ok(Encoding::Advanced(DdsCompression::Bc5Snorm)),
             b"DXT1" => Ok(Encoding::Bc1),
             b"DXT3" => Ok(Encoding::Bc2),
             b"DXT5" => Ok(Encoding::Bc3),
             b"DXT2" | b"DXT4" => Err(unsupported("premultiplied-alpha DXT2/DXT4 textures are not supported")),
-            _ => Err(unsupported(format!("compression `{}` is not supported (DXT1, DXT3 and DXT5 are)", fourcc_name(fourcc)))),
+            _ => Err(unsupported(format!("compression `{}` is not supported", fourcc_name(fourcc)))),
         };
     }
     if flags & DDPF_RGB != 0 {
@@ -195,20 +214,37 @@ fn dx10_encoding(b: &[u8]) -> Result<Encoding, CodecError> {
     if dimension != DIMENSION_TEXTURE2D {
         return Err(unsupported(format!("only 2D textures are supported (resource dimension {dimension})")));
     }
+    if array == 0 {
+        return Err(bad("DX10 array size is zero"));
+    }
+    // CUSTOM (4) carries packed data in the fourth channel. Keep those bytes for
+    // the importer's Alpha 1 route; it is not premultiplied alpha.
+    if matches!(le32(b, HEADER + 16)? & 7, 2 | 5..=7) {
+        return Err(unsupported("premultiplied or reserved DX10 alpha mode is not supported"));
+    }
     if array > 1 {
         return Err(unsupported(format!("texture arrays are not supported ({array} textures)")));
     }
     const RGBA: [u32; 4] = [0xff, 0xff00, 0xff_0000, 0xff00_0000];
     const BGRA: [u32; 4] = [0xff_0000, 0xff00, 0xff, 0xff00_0000];
     const BGRX: [u32; 4] = [0xff_0000, 0xff00, 0xff, 0];
+    if let Some(c) = DdsCompression::from_dxgi(dxgi)
+        && !matches!(c, DdsCompression::None | DdsCompression::Bc1 | DdsCompression::Bc2 | DdsCompression::Bc3)
+    {
+        return Ok(Encoding::Advanced(c));
+    }
     match dxgi {
+        79 => Ok(Encoding::Advanced(DdsCompression::Bc4)),
+        82 => Ok(Encoding::Advanced(DdsCompression::Bc5)),
+        94 => Ok(Encoding::Advanced(DdsCompression::Bc6h)),
+        97 => Ok(Encoding::Advanced(DdsCompression::Bc7)),
         27..=29 => Encoding::masks(32, RGBA, false),
         87 | 90 | 91 => Encoding::masks(32, BGRA, false),
         88 | 92 | 93 => Encoding::masks(32, BGRX, false),
         70..=72 => Ok(Encoding::Bc1),
         73..=75 => Ok(Encoding::Bc2),
         76..=78 => Ok(Encoding::Bc3),
-        _ => Err(unsupported(format!("DXGI format {dxgi} is not supported (BC1, BC2, BC3 and 8-bit RGBA or BGRA are)"))),
+        _ => Err(unsupported(format!("DXGI format {dxgi} is not supported by the 2D DDS decoder"))),
     }
 }
 
@@ -221,6 +257,8 @@ struct Parsed<'a> {
     height: u32,
     levels: u32,
     pitch: Option<u32>,
+    linear: bool,
+    dx10: bool,
 }
 
 impl Parsed<'_> {
@@ -250,7 +288,8 @@ fn parse(b: &[u8]) -> Result<Parsed<'_>, CodecError> {
     let levels = if flags & DDSD_MIPMAPCOUNT != 0 { le32(b, 28)?.max(1) } else { 1 };
     // The same header field is a total level size for BC, but a row stride when DDSD_PITCH is set.
     let pitch = if flags & DDSD_PITCH != 0 { Some(le32(b, 20)?) } else { None };
-    Ok(Parsed { encoding, data: b.get(start..).unwrap_or_default(), width, height, levels, pitch })
+    let linear = dx10 && !matches!(le32(b, HEADER)?, 29 | 72 | 75 | 78 | 91 | 93 | 99);
+    Ok(Parsed { encoding, data: b.get(start..).unwrap_or_default(), width, height, levels, pitch, linear, dx10 })
 }
 
 pub(crate) fn decode(b: &[u8], limits: &Limits) -> Result<Image, CodecError> {
@@ -279,7 +318,8 @@ fn level_image(p: &Parsed, index: u32, limits: &Limits) -> Result<Image, CodecEr
     }
     let pitch = if index == 0 { p.pitch } else { None };
     let (row_pitch, size) = p.encoding.level_layout(w, h, pitch)?;
-    limits.check(w, h, p.encoding.layout(), SampleType::U8)?;
+    let sample = if matches!(p.encoding, Encoding::Advanced(c) if c.is_float()) { SampleType::F32 } else { SampleType::U8 };
+    limits.check(w, h, p.encoding.layout(), sample)?;
     let data = p.data.get(at..).and_then(|d| d.get(..size)).ok_or_else(|| bad(format!("truncated pixel data: {size} bytes needed")))?;
     decode_image(p.encoding, data, w, h, row_pitch)
 }
@@ -288,10 +328,32 @@ fn level_image(p: &Parsed, index: u32, limits: &Limits) -> Result<Image, CodecEr
 /// encoding a save could write back, for the options dialog's match-source defaults.
 pub(crate) fn info(b: &[u8]) -> Result<crate::options::DdsInfo, CodecError> {
     let p = parse(b)?;
-    Ok(crate::options::DdsInfo { width: p.width, height: p.height, levels: p.levels, alpha: p.encoding.has_alpha(), compression: p.encoding.compression() })
+    let compression = p.encoding.compression().map(|c| {
+        if p.dx10 {
+            match c {
+                DdsCompression::None => {
+                    if p.linear {
+                        DdsCompression::RgbaLinear
+                    } else {
+                        DdsCompression::RgbaSrgb
+                    }
+                }
+                DdsCompression::Bc1 => DdsCompression::Bc1Linear,
+                DdsCompression::Bc2 => DdsCompression::Bc2Linear,
+                DdsCompression::Bc3 => DdsCompression::Bc3Linear,
+                _ => c,
+            }
+        } else {
+            c
+        }
+    });
+    Ok(crate::options::DdsInfo { linear: p.linear, width: p.width, height: p.height, levels: p.levels, alpha: p.encoding.has_alpha(), compression })
 }
 
 fn decode_image(encoding: Encoding, data: &[u8], width: u32, height: u32, row_pitch: usize) -> Result<Image, CodecError> {
+    if let Encoding::Advanced(c) = encoding {
+        return super::dds_advanced::decode(c, data, width, height, row_pitch);
+    }
     let layout = encoding.layout();
     let (w, h) = (width as usize, height as usize);
     let channels = layout.channels();
@@ -310,6 +372,7 @@ fn decode_image(encoding: Encoding, data: &[u8], width: u32, height: u32, row_pi
                 }
             }
         }
+        Encoding::Advanced(_) => return Err(bad("advanced codec dispatch failed")),
         Encoding::Bc1 | Encoding::Bc2 | Encoding::Bc3 => {
             let block_size = if matches!(encoding, Encoding::Bc1) { 8 } else { 16 };
             let blocks_x = w.div_ceil(4);
@@ -462,6 +525,9 @@ fn half((w, h): (usize, usize)) -> (usize, usize) {
 }
 
 pub(crate) fn encode(image: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError> {
+    if !matches!(opts.dds.compression, DdsCompression::None | DdsCompression::Bc1 | DdsCompression::Bc2 | DdsCompression::Bc3) {
+        return super::dds_native::encode(image, opts);
+    }
     let img = image.converted(plan.layout, SampleType::U8);
     let pixels = img.as_u8().ok_or_else(|| encode_err("the image was not converted to 8 bits per channel"))?;
     let store = Store::new(opts.dds.compression, img.layout())?;
